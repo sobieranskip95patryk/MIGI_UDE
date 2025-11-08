@@ -1,0 +1,58 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # MIGI Services
+  - job_name: 'meta-geniusz'
+    static_configs:
+      - targets: ['meta_geniusz:8805']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  - job_name: 'drift-money'
+    static_configs:
+      - targets: ['drift_money:8801']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  - job_name: 'gok-ai'
+    static_configs:
+      - targets: ['gok_ai:8802']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  - job_name: 'spiralmind-nexus'
+    static_configs:
+      - targets: ['spiralmind_nexus:8806']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Infrastructure
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres:5432']
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+
+  # Traefik Gateway
+  - job_name: 'traefik'
+    static_configs:
+      - targets: ['gateway:8080']
+    metrics_path: '/metrics'
+
+  # Node Exporter (if added)
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']

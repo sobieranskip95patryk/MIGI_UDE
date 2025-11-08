@@ -1,0 +1,385 @@
+version: "3.9"
+
+# MIGI Unified Dev Environment - Complete Ecosystem
+# Run entire Meta-Geniusz ecosystem in one command: docker compose up --build
+
+services:
+  # ===== REVERSE PROXY & GATEWAY =====
+  gateway:
+    image: traefik:v3.0
+    container_name: migi_gateway
+    command:
+      - "--api.dashboard=true"
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ADMIN_EMAIL:-admin@meta-geniusz.com}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--log.level=INFO"
+      - "--accesslog=true"
+    ports:
+      - "80:80"         # HTTP
+      - "443:443"       # HTTPS
+      - "8080:8080"     # Traefik Dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./gateway/letsencrypt:/letsencrypt
+      - ./gateway/logs:/var/log/traefik
+    networks:
+      - migi_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===== DATABASES & STORAGE =====
+  postgres:
+    image: postgres:15-alpine
+    container_name: migi_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-migi_ecosystem}
+      POSTGRES_USER: ${POSTGRES_USER:-migi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-migi_secure_pass}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/sql/init:/docker-entrypoint-initdb.d
+    networks:
+      - migi_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-migi}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: migi_redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_secure_pass}
+    volumes:
+      - redis_data:/data
+    networks:
+      - migi_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ===== CORE SERVICES =====
+  
+  # Meta-Geniusz System - Central Intelligence
+  meta_geniusz:
+    build: 
+      context: ../Meta_Geniusz_system-main
+      dockerfile: Dockerfile
+    container_name: migi_meta_geniusz
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-migi}:${POSTGRES_PASSWORD:-migi_secure_pass}@postgres:5432/${POSTGRES_DB:-migi_ecosystem}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_pass}@redis:6379
+      - DRIFT_API_URL=http://drift_money:8801
+      - GOK_AI_URL=http://gok_ai:8802
+      - JWT_SECRET=${JWT_SECRET:-meta_geniusz_jwt_secret_dev}
+      - PORT=8805
+    volumes:
+      - ../Meta_Geniusz_system-main:/app
+      - /app/node_modules
+    networks:
+      - migi_net
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.mgs.rule=Host(`${DOMAIN:-localhost}`) && PathPrefix(`/api/mgs`)"
+      - "traefik.http.routers.mgs.middlewares=mgs-stripprefix"
+      - "traefik.http.middlewares.mgs-stripprefix.stripprefix.prefixes=/api/mgs"
+      - "traefik.http.services.mgs.loadbalancer.server.port=8805"
+
+  # Drift Money - Economic Engine
+  drift_money:
+    build: 
+      context: ../drift_money-main
+      dockerfile: Dockerfile
+    container_name: migi_drift_money
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-migi}:${POSTGRES_PASSWORD:-migi_secure_pass}@postgres:5432/${POSTGRES_DB:-migi_ecosystem}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_pass}@redis:6379
+      - BLOCKCHAIN_RPC_URL=${BLOCKCHAIN_RPC_URL:-http://hardhat:8545}
+      - CONTRACT_ADDRESS=${DRIFT_COIN_ADDRESS:-0x0000000000000000000000000000000000000000}
+      - PRIVATE_KEY=${DRIFT_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}
+      - PORT=8801
+    volumes:
+      - ../drift_money-main:/app
+      - /app/node_modules
+    networks:
+      - migi_net
+    depends_on:
+      - postgres
+      - redis
+      - hardhat
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.drift.rule=Host(`${DOMAIN:-localhost}`) && PathPrefix(`/api/drift`)"
+      - "traefik.http.routers.drift.middlewares=drift-stripprefix"
+      - "traefik.http.middlewares.drift-stripprefix.stripprefix.prefixes=/api/drift"
+      - "traefik.http.services.drift.loadbalancer.server.port=8801"
+
+  # GOK-AI - AI Intelligence Layer
+  gok_ai:
+    build: 
+      context: ../GOK-AI-MixTape-main
+      dockerfile: Dockerfile
+    container_name: migi_gok_ai
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-migi}:${POSTGRES_PASSWORD:-migi_secure_pass}@postgres:5432/${POSTGRES_DB:-migi_ecosystem}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_pass}@redis:6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - PORT=8802
+    volumes:
+      - ../GOK-AI-MixTape-main:/app
+      - /app/node_modules
+    networks:
+      - migi_net
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.gokai.rule=Host(`${DOMAIN:-localhost}`) && PathPrefix(`/api/ai`)"
+      - "traefik.http.routers.gokai.middlewares=gokai-stripprefix"
+      - "traefik.http.middlewares.gokai-stripprefix.stripprefix.prefixes=/api/ai"
+      - "traefik.http.services.gokai.loadbalancer.server.port=8802"
+
+  # Rocket Fuel Girls - Community Frontend
+  rocket_fuel_girls:
+    build: 
+      context: ../rocket_fuell_girls-main
+      dockerfile: Dockerfile
+    container_name: migi_rocket_fuel_girls
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - NEXT_PUBLIC_API_URL=http://${DOMAIN:-localhost}/api
+      - NEXT_PUBLIC_DRIFT_URL=http://${DOMAIN:-localhost}/api/drift
+      - NEXT_PUBLIC_AI_URL=http://${DOMAIN:-localhost}/api/ai
+      - NEXT_PUBLIC_MGS_URL=http://${DOMAIN:-localhost}/api/mgs
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-migi}:${POSTGRES_PASSWORD:-migi_secure_pass}@postgres:5432/${POSTGRES_DB:-migi_ecosystem}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-rocket_fuel_secret_dev}
+      - NEXTAUTH_URL=http://${DOMAIN:-localhost}
+      - PORT=3000
+    volumes:
+      - ../rocket_fuell_girls-main:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - migi_net
+    depends_on:
+      - postgres
+      - meta_geniusz
+      - drift_money
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.rfg.rule=Host(`app.${DOMAIN:-localhost}`) || Host(`${DOMAIN:-localhost}`)"
+      - "traefik.http.services.rfg.loadbalancer.server.port=3000"
+
+  # Hip-Hop Universe - Music & NFT Platform
+  hip_hop_universe:
+    build: 
+      context: ../hip_hop_universe-main
+      dockerfile: Dockerfile
+    container_name: migi_hip_hop_universe
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - NEXT_PUBLIC_API_URL=http://${DOMAIN:-localhost}/api
+      - NEXT_PUBLIC_DRIFT_URL=http://${DOMAIN:-localhost}/api/drift
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-migi}:${POSTGRES_PASSWORD:-migi_secure_pass}@postgres:5432/${POSTGRES_DB:-migi_ecosystem}
+      - PORT=3001
+    volumes:
+      - ../hip_hop_universe-main:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - migi_net
+    depends_on:
+      - postgres
+      - drift_money
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.hhu.rule=Host(`music.${DOMAIN:-localhost}`)"
+      - "traefik.http.services.hhu.loadbalancer.server.port=3001"
+
+  # SpiralMind Nexus - Advanced Analytics
+  spiralmind_nexus:
+    build: 
+      context: ../SpiralMind-Nexus-main
+      dockerfile: Dockerfile
+    container_name: migi_spiralmind_nexus
+    environment:
+      - PYTHONPATH=/app
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-migi}:${POSTGRES_PASSWORD:-migi_secure_pass}@postgres:5432/${POSTGRES_DB:-migi_ecosystem}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_secure_pass}@redis:6379
+      - MGS_API_URL=http://meta_geniusz:8805
+      - PORT=8806
+    volumes:
+      - ../SpiralMind-Nexus-main:/app
+    networks:
+      - migi_net
+    depends_on:
+      - postgres
+      - redis
+      - meta_geniusz
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.spiral.rule=Host(`${DOMAIN:-localhost}`) && PathPrefix(`/api/spiral`)"
+      - "traefik.http.routers.spiral.middlewares=spiral-stripprefix"
+      - "traefik.http.middlewares.spiral-stripprefix.stripprefix.prefixes=/api/spiral"
+      - "traefik.http.services.spiral.loadbalancer.server.port=8806"
+
+  # ===== BLOCKCHAIN & SMART CONTRACTS =====
+  hardhat:
+    image: node:18-alpine
+    container_name: migi_hardhat
+    working_dir: /app
+    command: sh -c "npm install && npx hardhat node --hostname 0.0.0.0"
+    volumes:
+      - ../Meta_Geniusz_system-main:/app
+    networks:
+      - migi_net
+    ports:
+      - "8545:8545"  # Blockchain RPC
+    environment:
+      - NODE_ENV=development
+    restart: unless-stopped
+
+  # ===== MONITORING & OBSERVABILITY =====
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: migi_prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./infra/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - migi_net
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.prometheus.rule=Host(`metrics.${DOMAIN:-localhost}`)"
+      - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: migi_grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./infra/monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - migi_net
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.grafana.rule=Host(`dashboard.${DOMAIN:-localhost}`)"
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+
+  loki:
+    image: grafana/loki:latest
+    container_name: migi_loki
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./infra/monitoring/loki.yml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    networks:
+      - migi_net
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: migi_promtail
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./infra/monitoring/promtail.yml:/etc/promtail/config.yml
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    networks:
+      - migi_net
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  # ===== UTILITIES =====
+  adminer:
+    image: adminer:latest
+    container_name: migi_adminer
+    networks:
+      - migi_net
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.adminer.rule=Host(`db.${DOMAIN:-localhost}`)"
+      - "traefik.http.services.adminer.loadbalancer.server.port=8080"
+
+  redis_commander:
+    image: rediscommander/redis-commander:latest
+    container_name: migi_redis_commander
+    environment:
+      - REDIS_HOSTS=local:redis:6379:0:${REDIS_PASSWORD:-redis_secure_pass}
+    networks:
+      - migi_net
+    depends_on:
+      - redis
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.redis-ui.rule=Host(`redis.${DOMAIN:-localhost}`)"
+      - "traefik.http.services.redis-ui.loadbalancer.server.port=8081"
+
+# ===== NETWORKS =====
+networks:
+  migi_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# ===== VOLUMES =====
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  loki_data:
+    driver: local
